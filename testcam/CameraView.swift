@@ -341,6 +341,7 @@ class CameraViewController: PlatformViewController {
         }
     }
 }
+//Bhosdino
 
 extension CameraViewController: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
