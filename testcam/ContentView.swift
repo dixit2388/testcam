@@ -14,9 +14,7 @@ import UIKit
 import AppKit
 #endif
 
-extension Notification.Name {
-    static let capturePhoto = Notification.Name("capturePhoto")
-}
+private let captureNotificationName = Notification.Name("capturePhoto")
 
 enum AppView {
     case camera
@@ -25,12 +23,13 @@ enum AppView {
 }
 
 struct ContentView: View {
-    @State private var capturedImage: PlatformImage?
+    @State private var capturedImage: Platform.Image?
     @State private var isCapturing = false
     @State private var showAlert = false
     @State private var alertMessage = ""
     @State private var currentView: AppView = .camera
     @State private var showSavedAlert = false
+    @State private var selectedFilter: PhotoFilter = .original
     @ObservedObject var photoStorage = PhotoStorage.shared
     
     var body: some View {
@@ -42,8 +41,9 @@ struct ContentView: View {
                 if let image = capturedImage {
                     PhotoPreviewView(
                         image: image,
-                        onSave: {
-                            savePhoto(image)
+                        initialFilter: selectedFilter,
+                        onSave: { filteredImage in
+                            savePhoto(filteredImage)
                         },
                         onRetake: {
                             capturedImage = nil
@@ -109,15 +109,16 @@ struct ContentView: View {
         .onChange(of: isCapturing) { newValue in
             if newValue {
                 print("isCapturing changed to true - posting capture notification")
-                NotificationCenter.default.post(name: .capturePhoto, object: nil)
+                NotificationCenter.default.post(name: captureNotificationName, object: nil)
             }
         }
     }
     
     var cameraView: some View {
         ZStack {
-            CameraView(capturedImage: $capturedImage, isCapturing: $isCapturing)
+            CameraView(capturedImage: $capturedImage, isCapturing: $isCapturing, selectedFilter: $selectedFilter)
                 .ignoresSafeArea()
+                .overlay(filterOverlay)
             
             VStack {
                 // Top toolbar
@@ -178,6 +179,9 @@ struct ContentView: View {
                 
                 Spacer()
                 
+                FilterPicker(selectedFilter: $selectedFilter)
+                    .padding(.bottom, 16)
+                
                 // Capture button
                 Button(action: {
                     print("Capture button tapped")
@@ -201,7 +205,21 @@ struct ContentView: View {
         }
     }
     
-    func savePhoto(_ image: PlatformImage) {
+    private var filterOverlay: some View {
+        Group {
+            switch selectedFilter {
+            case .original:
+                Color.clear
+            case .sepia:
+                Color.orange.opacity(0.25).blendMode(.screen)
+            case .noir:
+                Color.black.opacity(0.35)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    func savePhoto(_ image: Platform.Image) {
         if let _ = photoStorage.savePhoto(image) {
             photoStorage.loadPhotos() // Reload to update the gallery button thumbnail
             showSavedAlert = true

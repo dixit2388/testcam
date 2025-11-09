@@ -22,7 +22,7 @@ class PhotoStorage: ObservableObject {
     
     struct PhotoItem: Identifiable {
         let id: UUID
-        let image: PlatformImage
+        let image: Platform.Image
         let date: Date
         let fileURL: URL
         
@@ -52,7 +52,7 @@ class PhotoStorage: ObservableObject {
         }
     }
     
-    func savePhoto(_ image: PlatformImage) -> UUID? {
+    func savePhoto(_ image: Platform.Image) -> UUID? {
         let id = UUID()
         let fileName = "\(id.uuidString).jpg"
         let fileURL = photosDirectory.appendingPathComponent(fileName)

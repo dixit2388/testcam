@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AVFoundation
+import CoreImage
 
 #if os(iOS)
 import UIKit
@@ -14,134 +15,185 @@ import UIKit
 import AppKit
 #endif
 
+enum Platform {
+    #if os(iOS)
+    typealias Image = UIImage
+    typealias ViewController = UIViewController
+    typealias View = UIView
+    typealias Color = UIColor
+    #elseif os(macOS)
+    typealias Image = NSImage
+    typealias ViewController = NSViewController
+    typealias View = NSView
+    typealias Color = NSColor
+    #endif
+}
+
+enum PhotoFilter: String, CaseIterable, Identifiable {
+    case original
+    case sepia
+    case noir
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .original: return "Original"
+        case .sepia: return "Warm"
+        case .noir: return "Noir"
+        }
+    }
+    
+    func apply(to image: Platform.Image) -> Platform.Image {
+        switch self {
+        case .original:
+            return image
+        case .sepia:
+            return PhotoFilterProcessor.shared.applyFilter(named: "CISepiaTone", intensity: 0.9, to: image)
+        case .noir:
+            return PhotoFilterProcessor.shared.applyFilter(named: "CIPhotoEffectNoir", to: image)
+        }
+    }
+}
+
+final class PhotoFilterProcessor {
+    static let shared = PhotoFilterProcessor()
+    private let context = CIContext()
+    
+    private init() {}
+    
+    func applyFilter(named name: String, intensity: Float? = nil, to image: Platform.Image) -> Platform.Image {
+        guard let ciImage = makeCIImage(from: image),
+              let filter = CIFilter(name: name) else {
+            return image
+        }
+        
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        if let intensity = intensity {
+            filter.setValue(intensity, forKey: kCIInputIntensityKey)
+        }
+        
+        guard let outputImage = filter.outputImage,
+              let cgImage = context.createCGImage(outputImage, from: outputImage.extent) else {
+            return image
+        }
+        
+        #if os(iOS)
+        return UIImage(cgImage: cgImage)
+        #elseif os(macOS)
+        let size = NSSize(width: cgImage.width, height: cgImage.height)
+        return NSImage(cgImage: cgImage, size: size)
+        #endif
+    }
+    
+    private func makeCIImage(from image: Platform.Image) -> CIImage? {
+        #if os(iOS)
+        return CIImage(image: image)
+        #elseif os(macOS)
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return CIImage(bitmapImageRep: bitmap)
+        #endif
+    }
+}
+
 struct CameraView: View {
-    @Binding var capturedImage: PlatformImage?
+    @Binding var capturedImage: Platform.Image?
     @Binding var isCapturing: Bool
+    @Binding var selectedFilter: PhotoFilter
     
     var body: some View {
         #if os(iOS)
-        CameraViewiOS(capturedImage: $capturedImage, isCapturing: $isCapturing)
+        CameraViewIOS(capturedImage: $capturedImage, isCapturing: $isCapturing, selectedFilter: $selectedFilter)
         #elseif os(macOS)
-        CameraViewmacOS(capturedImage: $capturedImage, isCapturing: $isCapturing)
+        CameraViewMac(capturedImage: $capturedImage, isCapturing: $isCapturing, selectedFilter: $selectedFilter)
         #endif
     }
 }
 
 #if os(iOS)
-typealias PlatformImage = UIImage
-typealias PlatformViewController = UIViewController
-typealias PlatformView = UIView
-
-struct CameraViewiOS: UIViewControllerRepresentable {
-    @Binding var capturedImage: PlatformImage?
+private struct CameraViewIOS: UIViewControllerRepresentable {
+    @Binding var capturedImage: Platform.Image?
     @Binding var isCapturing: Bool
+    @Binding var selectedFilter: PhotoFilter
     
     func makeUIViewController(context: Context) -> CameraViewController {
         let controller = CameraViewController()
         controller.delegate = context.coordinator
-        context.coordinator.setupNotificationObserver(for: controller)
         return controller
     }
     
     func updateUIViewController(_ uiViewController: CameraViewController, context: Context) {
-        // Update is not needed for notification-based approach
+        uiViewController.selectedFilter = selectedFilter
+        if isCapturing {
+            uiViewController.capturePhoto()
+            DispatchQueue.main.async {
+                isCapturing = false
+            }
+        }
     }
     
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
     
-    class Coordinator: NSObject, CameraViewControllerDelegate {
-        let parent: CameraViewiOS
-        private var notificationObserver: NSObjectProtocol?
+    final class Coordinator: NSObject, CameraViewControllerDelegate {
+        private let parent: CameraViewIOS
         
-        init(_ parent: CameraViewiOS) {
+        init(_ parent: CameraViewIOS) {
             self.parent = parent
-            super.init()
         }
         
-        func setupNotificationObserver(for controller: CameraViewController) {
-            notificationObserver = NotificationCenter.default.addObserver(
-                forName: .capturePhoto,
-                object: nil,
-                queue: .main
-            ) { [weak controller] _ in
-                print("Notification received - triggering photo capture")
-                controller?.capturePhoto()
-            }
-        }
-        
-        deinit {
-            if let observer = notificationObserver {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
-        
-        func didCaptureImage(_ image: PlatformImage) {
-            print("Photo captured successfully!")
+        func cameraViewController(_ controller: CameraViewController, didCapture image: Platform.Image) {
+            let filtered = parent.selectedFilter.apply(to: image)
+            let bindingParent = parent
             DispatchQueue.main.async {
-                self.parent.capturedImage = image
-                self.parent.isCapturing = false
+                bindingParent.capturedImage = filtered
+                bindingParent.isCapturing = false
             }
         }
     }
 }
-
 #elseif os(macOS)
-typealias PlatformImage = NSImage
-typealias PlatformViewController = NSViewController
-typealias PlatformView = NSView
-
-struct CameraViewmacOS: NSViewControllerRepresentable {
-    @Binding var capturedImage: PlatformImage?
+private struct CameraViewMac: NSViewControllerRepresentable {
+    @Binding var capturedImage: Platform.Image?
     @Binding var isCapturing: Bool
+    @Binding var selectedFilter: PhotoFilter
     
     func makeNSViewController(context: Context) -> CameraViewController {
         let controller = CameraViewController()
         controller.delegate = context.coordinator
-        context.coordinator.setupNotificationObserver(for: controller)
         return controller
     }
     
     func updateNSViewController(_ nsViewController: CameraViewController, context: Context) {
-        // Update is not needed for notification-based approach
+        nsViewController.selectedFilter = selectedFilter
+        if isCapturing {
+            nsViewController.capturePhoto()
+            DispatchQueue.main.async {
+                isCapturing = false
+            }
+        }
     }
     
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
     
-    class Coordinator: NSObject, CameraViewControllerDelegate {
-        let parent: CameraViewmacOS
-        private var notificationObserver: NSObjectProtocol?
+    final class Coordinator: NSObject, CameraViewControllerDelegate {
+        private let parent: CameraViewMac
         
-        init(_ parent: CameraViewmacOS) {
+        init(_ parent: CameraViewMac) {
             self.parent = parent
-            super.init()
         }
         
-        func setupNotificationObserver(for controller: CameraViewController) {
-            notificationObserver = NotificationCenter.default.addObserver(
-                forName: .capturePhoto,
-                object: nil,
-                queue: .main
-            ) { [weak controller] _ in
-                print("Notification received - triggering photo capture")
-                controller?.capturePhoto()
-            }
-        }
-        
-        deinit {
-            if let observer = notificationObserver {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
-        
-        func didCaptureImage(_ image: PlatformImage) {
-            print("Photo captured successfully!")
+        func cameraViewController(_ controller: CameraViewController, didCapture image: Platform.Image) {
+            let filtered = parent.selectedFilter.apply(to: image)
+            let bindingParent = parent
             DispatchQueue.main.async {
-                self.parent.capturedImage = image
-                self.parent.isCapturing = false
+                bindingParent.capturedImage = filtered
             }
         }
     }
@@ -149,239 +201,126 @@ struct CameraViewmacOS: NSViewControllerRepresentable {
 #endif
 
 protocol CameraViewControllerDelegate: AnyObject {
-    func didCaptureImage(_ image: PlatformImage)
+    func cameraViewController(_ controller: CameraViewController, didCapture image: Platform.Image)
 }
 
-class CameraViewController: PlatformViewController {
+#if os(iOS)
+final class CameraViewController: UIViewController, AVCapturePhotoCaptureDelegate {
     weak var delegate: CameraViewControllerDelegate?
+    var selectedFilter: PhotoFilter = .original
     
-    private var captureSession: AVCaptureSession!
-    private var stillImageOutput: AVCapturePhotoOutput!
-    private var videoPreviewLayer: AVCaptureVideoPreviewLayer!
-    private var isCapturingPhoto = false
+    private let session = AVCaptureSession()
+    private let photoOutput = AVCapturePhotoOutput()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
     
-    #if os(iOS)
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCamera()
-    }
-    
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        startSessionIfNeeded()
-    }
-    
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        stopSessionIfNeeded()
+        setupSession()
+        setupPreview()
     }
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        videoPreviewLayer?.frame = view.bounds
+        previewLayer?.frame = view.bounds
     }
-    #elseif os(macOS)
+    
+    func capturePhoto() {
+        guard session.isRunning else { return }
+        let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+        photoOutput.capturePhoto(with: settings, delegate: self)
+    }
+    
+    private func setupSession() {
+        session.beginConfiguration()
+        session.sessionPreset = .photo
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            return
+        }
+        session.addInput(input)
+        guard session.canAddOutput(photoOutput) else { return }
+        session.addOutput(photoOutput)
+        session.commitConfiguration()
+        session.startRunning()
+    }
+    
+    private func setupPreview() {
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.connection?.videoOrientation = .portrait
+        layer.frame = view.bounds
+        view.layer.addSublayer(layer)
+        previewLayer = layer
+    }
+    
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        guard error == nil,
+              let data = photo.fileDataRepresentation(),
+              let image = UIImage(data: data) else {
+            return
+        }
+        delegate?.cameraViewController(self, didCapture: image)
+    }
+}
+#elseif os(macOS)
+final class CameraViewController: NSViewController, AVCapturePhotoCaptureDelegate {
+    weak var delegate: CameraViewControllerDelegate?
+    var selectedFilter: PhotoFilter = .original
+    
+    private let session = AVCaptureSession()
+    private let photoOutput = AVCapturePhotoOutput()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCamera()
-    }
-    
-    override func viewWillAppear() {
-        super.viewWillAppear()
-        startSessionIfNeeded()
-    }
-    
-    override func viewWillDisappear() {
-        super.viewWillDisappear()
-        stopSessionIfNeeded()
+        setupSession()
+        setupPreview()
     }
     
     override func viewDidLayout() {
         super.viewDidLayout()
-        videoPreviewLayer?.frame = view.bounds
-    }
-    #endif
-    
-    func startSessionIfNeeded() {
-        if captureSession != nil && !captureSession.isRunning {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.captureSession.startRunning()
-            }
-        }
-    }
-    
-    func stopSessionIfNeeded() {
-        if captureSession != nil && captureSession.isRunning {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.captureSession.stopRunning()
-            }
-        }
-    }
-    
-    func setupCamera() {
-        captureSession = AVCaptureSession()
-        captureSession.sessionPreset = .photo
-        
-        var camera: AVCaptureDevice?
-        
-        #if os(iOS)
-        // iOS: Try back camera first, then front camera
-        if let backCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-            camera = backCamera
-        } else if let frontCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) {
-            camera = frontCamera
-        } else {
-            // Fallback: try default video device (works on Mac Catalyst)
-            camera = AVCaptureDevice.default(for: .video)
-        }
-        #elseif os(macOS)
-        // macOS: First try to get default video device
-        camera = AVCaptureDevice.default(for: .video)
-        
-        // If no default, discover available cameras
-        if camera == nil {
-            let discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
-                mediaType: .video,
-                position: .unspecified
-            )
-            camera = discoverySession.devices.first
-            print("Found \(discoverySession.devices.count) camera(s)")
-            for device in discoverySession.devices {
-                print("Camera: \(device.localizedName)")
-            }
-        }
-        #endif
-        
-        guard let camera = camera else {
-            print("Unable to access camera! No camera found.")
-            DispatchQueue.main.async {
-                // You could show an error message to the user here
-            }
-            return
-        }
-        
-        print("Using camera: \(camera.localizedName)")
-        
-        do {
-            let input = try AVCaptureDeviceInput(device: camera)
-            stillImageOutput = AVCapturePhotoOutput()
-            
-            if captureSession.canAddInput(input) && captureSession.canAddOutput(stillImageOutput) {
-                captureSession.addInput(input)
-                captureSession.addOutput(stillImageOutput)
-                setupLivePreview()
-            } else {
-                print("Cannot add input or output to capture session")
-            }
-        } catch {
-            print("Error setting up camera input: \(error.localizedDescription)")
-        }
-    }
-    
-    func setupLivePreview() {
-        videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        videoPreviewLayer.videoGravity = .resizeAspectFill
-        
-        #if os(iOS)
-        videoPreviewLayer.connection?.videoOrientation = .portrait
-        #elseif os(macOS)
-        // macOS doesn't need orientation adjustment for preview
-        #endif
-        
-        #if os(iOS)
-        view.layer.addSublayer(videoPreviewLayer)
-        #elseif os(macOS)
-        if view.layer == nil {
-            view.layer = CALayer()
-        }
-        view.wantsLayer = true
-        view.layer?.addSublayer(videoPreviewLayer)
-        #endif
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.captureSession.startRunning()
-            DispatchQueue.main.async {
-                self?.videoPreviewLayer.frame = self?.view.bounds ?? .zero
-            }
-        }
+        previewLayer?.frame = view.bounds
     }
     
     func capturePhoto() {
-        print("capturePhoto() called")
-        print("isCapturingPhoto: \(isCapturingPhoto)")
-        print("stillImageOutput: \(stillImageOutput != nil ? "exists" : "nil")")
-        print("captureSession.isRunning: \(captureSession?.isRunning ?? false)")
-        
-        guard let output = stillImageOutput else {
-            print("Error: stillImageOutput is nil")
-            return
-        }
-        
-        guard !isCapturingPhoto else {
-            print("Warning: Already capturing a photo")
-            return
-        }
-        
-        guard captureSession?.isRunning == true else {
-            print("Error: Capture session is not running")
-            return
-        }
-        
-        isCapturingPhoto = true
+        guard session.isRunning else { return }
         let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
-        
-        // Ensure settings are compatible with the output
-        if output.availablePhotoCodecTypes.contains(.jpeg) {
-            output.capturePhoto(with: settings, delegate: self)
-            print("Photo capture initiated")
-        } else {
-            print("Error: JPEG codec not available")
-            isCapturingPhoto = false
-        }
-    }
-}
-
-extension CameraViewController: AVCapturePhotoCaptureDelegate {
-    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        print("didFinishProcessingPhoto called")
-        isCapturingPhoto = false
-        
-        if let error = error {
-            print("Error capturing photo: \(error.localizedDescription)")
-            return
-        }
-        
-        guard let imageData = photo.fileDataRepresentation() else {
-            print("Error: Could not get image data representation")
-            return
-        }
-        
-        print("Image data size: \(imageData.count) bytes")
-        
-        #if os(iOS)
-        if let image = UIImage(data: imageData) {
-            print("Successfully created UIImage")
-            delegate?.didCaptureImage(image)
-        } else {
-            print("Error: Could not create UIImage from data")
-        }
-        #elseif os(macOS)
-        if let image = NSImage(data: imageData) {
-            print("Successfully created NSImage")
-            delegate?.didCaptureImage(image)
-        } else {
-            print("Error: Could not create NSImage from data")
-        }
-        #endif
+        photoOutput.capturePhoto(with: settings, delegate: self)
     }
     
-    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
-        if let error = error {
-            print("Error in didFinishCaptureFor: \(error.localizedDescription)")
-        } else {
-            print("Photo capture finished successfully")
+    private func setupSession() {
+        session.beginConfiguration()
+        session.sessionPreset = .photo
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            return
         }
+        session.addInput(input)
+        guard session.canAddOutput(photoOutput) else { return }
+        session.addOutput(photoOutput)
+        session.commitConfiguration()
+        session.startRunning()
+    }
+    
+    private func setupPreview() {
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.frame = view.bounds
+        view.wantsLayer = true
+        view.layer?.addSublayer(layer)
+        previewLayer = layer
+    }
+    
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        guard error == nil,
+              let data = photo.fileDataRepresentation(),
+              let image = NSImage(data: data) else {
+            return
+        }
+        delegate?.cameraViewController(self, didCapture: image)
     }
 }
+#endif
 

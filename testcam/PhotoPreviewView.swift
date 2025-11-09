@@ -1,10 +1,3 @@
-//
-//  PhotoPreviewView.swift
-//  testcam
-//
-//  Created by Dixit Solanki on 2025-11-08.
-//
-
 import SwiftUI
 
 #if os(iOS)
@@ -14,10 +7,26 @@ import AppKit
 #endif
 
 struct PhotoPreviewView: View {
-    let image: PlatformImage
-    let onSave: () -> Void
+    private let originalImage: Platform.Image
+    let onSave: (Platform.Image) -> Void
     let onRetake: () -> Void
     let onDismiss: () -> Void
+    
+    @State private var selectedFilter: PhotoFilter
+    @State private var previewImage: Platform.Image
+    
+    init(image: Platform.Image,
+         initialFilter: PhotoFilter,
+         onSave: @escaping (Platform.Image) -> Void,
+         onRetake: @escaping () -> Void,
+         onDismiss: @escaping () -> Void) {
+        self.originalImage = image
+        self.onSave = onSave
+        self.onRetake = onRetake
+        self.onDismiss = onDismiss
+        _selectedFilter = State(initialValue: initialFilter)
+        _previewImage = State(initialValue: initialFilter.apply(to: image))
+    }
     
     var body: some View {
         ZStack {
@@ -42,7 +51,9 @@ struct PhotoPreviewView: View {
                     
                     Spacer()
                     
-                    Button(action: onSave) {
+                    Button(action: {
+                        onSave(previewImage)
+                    }) {
                         HStack {
                             Image(systemName: "checkmark")
                             Text("Save")
@@ -60,19 +71,35 @@ struct PhotoPreviewView: View {
                 .background(Color.black.opacity(0.7))
                 
                 // Image preview
-                #if os(iOS)
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                #elseif os(macOS)
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                #endif
+                Group {
+                    #if os(iOS)
+                    Image(uiImage: previewImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    #elseif os(macOS)
+                    Image(nsImage: previewImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    #endif
+                }
+                .padding(.horizontal)
+                
+                // Filter controls
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Filters")
+                        .foregroundColor(.white)
+                        .font(.headline)
+                        .padding(.leading)
+                    
+                    FilterPicker(selectedFilter: $selectedFilter) { filter in
+                        previewImage = filter.apply(to: originalImage)
+                    }
+                    .padding(.bottom, 20)
+                }
+                .background(Color.black.opacity(0.85))
             }
         }
     }
 }
-
